@@ -2,11 +2,31 @@
 # Taking Jacobians #
 ####################
 
+type JacobianCache{T, Q}
+    workvec::Vector{T}
+    output::Vector{T}
+    zeros::Vector{T}
+    partials::Vector{Q}
+end
+
+function JacobianCache{T}(Tv::Type{T}, intput_length, output_length)
+    workvec = zeros(Tv, output_length)
+    output = zeros(Tv, intput_length)
+    _zeros = zeros(Tv, output_length)
+    partials = build_partials(T)
+    return JacobianCache(workvec, output, _zeros, partials)
+end
+
+get_output(cache::JacobianCache) = cache.output
+get_zeros(cache::JacobianCache) = cache._zeros
+get_workvec(cache::JacobianCache) = cache.workvec
+get_partials(cache::JacobianCache) = cache.partials
+
 # Exposed API methods #
 #---------------------#
 @generated function jacobian!{T,A}(output::Matrix{T}, f, x::Vector, ::Type{A}=Void;
                                    chunk_size::Int=default_chunk_size,
-                                   cache::ForwardDiffCache=dummy_cache)
+                                   cache::JacobianCache=dummy_cache)
     if A <: Void
         return_stmt = :(jacobian!(output, result)::Matrix{T})
     elseif A <: AllResults
@@ -23,7 +43,7 @@ end
 
 @generated function jacobian{T,A}(f, x::Vector{T}, ::Type{A}=Void;
                                   chunk_size::Int=default_chunk_size,
-                                  cache::ForwardDiffCache=dummy_cache)
+                                  cache::JacobianCache=dummy_cache)
     if A <: Void
         return_stmt = :(jacobian(result)::Matrix{T})
     elseif A <: AllResults
@@ -38,36 +58,30 @@ end
     end
 end
 
-function jacobian{A}(f, ::Type{A}=Void;
+function jacobian{A}(f, input_length::Int, output_length::Int, ::Type{A}=Void;
                      mutates::Bool=false,
-                     chunk_size::Int=default_chunk_size,
-                     cache::ForwardDiffCache=ForwardDiffCache(),
-                     output_length::Int=0)
-    # if output_length > 0, assume that f is of
-    # the form f!(output, x), and generate the
-    # appropriate closure
-    if output_length > 0
-        output_cache = ForwardDiffCache()
-        function newf{G<:GradientNumber}(x::Vector{G})
-            output = get_workvec!(output_cache, G, output_length)
-            f(output, x)
-            return output
-        end
-    else
-        newf = f
+                     )
+
+    G = workvec_eltype(GradientNumber, Float64, Val{input_length}, Val{input_length})
+    cache = JacobianCache(G, input_length, output_length)
+
+    function newf{G<:GradientNumber}(x::Vector{G})
+        output = get_output(cache)
+        f(output, x)
+        return output
     end
 
     if mutates
         function j!(output::Matrix, x::Vector)
             return ForwardDiff.jacobian!(output, newf, x, A;
-                                         chunk_size=chunk_size,
+                                         chunk_size=length(x),
                                          cache=cache)
         end
         return j!
     else
         function j(x::Vector)
             return ForwardDiff.jacobian(newf, x, A;
-                                        chunk_size=chunk_size,
+                                        chunk_size=length(x),
                                         cache=cache)
         end
         return j
@@ -78,7 +92,7 @@ end
 #----------------------------------------#
 function _calc_jacobian{S}(f, x::Vector, ::Type{S},
                            chunk_size::Int,
-                           cache::ForwardDiffCache)
+                           cache::JacobianCache)
     X = Val{length(x)}
     C = Val{chunk_size}
     return _calc_jacobian(f, x, S, X, C, cache)
@@ -87,7 +101,7 @@ end
 @generated function _calc_jacobian{T,S,xlen,chunk_size}(f, x::Vector{T}, ::Type{S},
                                                         X::Type{Val{xlen}},
                                                         C::Type{Val{chunk_size}},
-                                                        cache::ForwardDiffCache)
+                                                        cache::JacobianCache)
     check_chunk_size(xlen, chunk_size)
     G = workvec_eltype(GradientNumber, T, Val{xlen}, Val{chunk_size})
     if chunk_size_matches_vec_mode(xlen, chunk_size)
@@ -164,8 +178,8 @@ end
 
     return quote
         G = $G
-        gradvec = get_workvec!(cache, GradientNumber, T, X, C)
-        partials = get_partials!(cache, G)
+        gradvec = get_workvec(cache)
+        partials = get_partials(cache)
 
         $body
 
