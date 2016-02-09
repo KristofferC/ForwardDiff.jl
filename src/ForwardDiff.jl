@@ -2,6 +2,7 @@ isdefined(Base, :__precompile__) && __precompile__()
 
 module ForwardDiff
 
+using Base.Threads
 import Calculus
 import NaNMath
 

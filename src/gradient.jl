@@ -51,6 +51,32 @@ end
     end
 end
 
+#########
+# cache #
+#########
+
+immutable GradientCache{N, T} <: ForwardDiffCache
+    workvec::Vector{DiffNumber{N, T}}
+    partials::Vector{Partials{N, T}}
+    partials_remainder::Vector{Partials{N, T}}
+end
+
+function GradientCache{N, T}(Z, L, ::Type{Val{N}}, ::Type{Val{T}})
+    V_diffnumber = Vector{DiffNumber{N,T}}(L)
+    V_partials = Vector{Partials{N,T}}(N)
+    V_partials_remainder = Vector{Partials{N,T}}(Z)
+
+    x = one(T)
+    for i in 1:N
+        V_partials[i] = setindex(zero(Partials{N,T}), x, i)
+        if i <= Z
+            V_partials_remainder[i] = setindex(zero(Partials{N,T}), x, i)
+        end
+    end
+
+    return GradientCache{N, T}(V_diffnumber, V_partials, V_partials_remainder)
+end
+
 ##################
 # calc_gradient! #
 ##################
@@ -77,14 +103,25 @@ end
 end
 
 @generated function calc_gradient!{S,T,N,L}(f, output::Vector{S}, x::Vector{T}, ::Type{Val{N}}, ::Type{Val{L}})
-    if N == L
-        body = VEC_MODE_EXPR
+    if L == N
+        remainder = 0
     else
         remainder = L % N == 0 ? N : L % N
-        fill_length = L - remainder
-        reseed_partials = remainder == N ? :() : :(seed_partials = cachefetch!(tid, Partials{N,T}, Val{$(remainder)}))
+    end
+
+    if N == L
         body = quote
-            workvec::Vector{DiffNumber{N,T}} = cachefetch!(tid, DiffNumber{N,T}, Val{L})
+                cache_vec = cachefetch!(Val{N}, Val{T}, Val{L}, Val{$remainder})
+                seed_partials::Vector{Partials{N,T}} = cache_vec[tid].partials
+                $VEC_MODE_EXPR
+            end
+    else
+        fill_length = L - remainder
+        body = quote
+            cache_vec = cachefetch!(Val{N}, Val{T}, Val{L}, Val{$remainder})
+            seed_partials::Vector{Partials{N,T}} = cache_vec[tid].partials
+            cache = cache_vec[tid]
+            workvec::Vector{DiffNumber{N,T}} = cache.workvec
             pzeros = zero(Partials{N,T})
 
             @simd for i in 1:L
@@ -106,10 +143,9 @@ end
 
             # Performing the final chunk manually seems to triggers some additional
             # optimization heuristics, which results in more efficient memory allocation
-            $(reseed_partials)
             @simd for i in 1:$(remainder)
                 j = $(fill_length) + i
-                @inbounds workvec[j] = DiffNumber{N,T}(x[j], seed_partials[i])
+                @inbounds workvec[j] = DiffNumber{N,T}(x[j], cache.partials_remainder[i])
             end
             result::DiffNumber{N,S} = f(workvec)
             @simd for i in 1:$(remainder)
@@ -130,21 +166,19 @@ if VERSION >= THREAD_VERSION
             nthreads = Threads.nthreads()
             remainder = L % N == 0 ? N : L % N
             fill_length = L - remainder
-            reseed_partials = remainder == N ? :() : :(seed_partials = cachefetch!(tid, Partials{N,T}, Val{$(remainder)}))
             body = quote
-                workvecs::NTuple{$(nthreads), Vector{DiffNumber{N,T}}} = cachefetch!(DiffNumber{N,T}, Val{L})
                 pzeros = zero(Partials{N,T})
 
                 Threads.@threads for t in 1:$(nthreads)
                     # must be local, see https://github.com/JuliaLang/julia/issues/14948
-                    local workvec = workvecs[t]
+                    local workvec = cache_vec[t].workvec
                     @simd for i in 1:L
                         @inbounds workvec[i] = DiffNumber{N,T}(x[i], pzeros)
                     end
                 end
 
                 Threads.@threads for c in 1:$(N):$(fill_length)
-                    local workvec = workvecs[Threads.threadid()]
+                    local workvec = cache[Threads.threadid()].workvec
                     @simd for i in 1:N
                         j = i + c - 1
                         @inbounds workvec[j] = DiffNumber{N,T}(x[j], seed_partials[i])
@@ -159,11 +193,10 @@ if VERSION >= THREAD_VERSION
 
                 # Performing the final chunk manually seems to triggers some additional
                 # optimization heuristics, which results in more efficient memory allocation
-                $(reseed_partials)
-                workvec = workvecs[tid]
+                workvec = cache_vec[tid].workvec
                 @simd for i in 1:$(remainder)
                     j = $(fill_length) + i
-                    @inbounds workvec[j] = DiffNumber{N,T}(x[j], seed_partials[i])
+                    @inbounds workvec[j] = DiffNumber{N,T}(x[j], cache_vec[tid].partials_remainder[i])
                 end
                 result::DiffNumber{N,S} = f(workvec)
                 @simd for i in 1:$(remainder)
@@ -178,7 +211,7 @@ if VERSION >= THREAD_VERSION
 end
 
 const VEC_MODE_EXPR = quote
-    workvec::Vector{DiffNumber{N,T}} = cachefetch!(tid, DiffNumber{N,T}, Val{L})
+    workvec::Vector{DiffNumber{N,T}} = cache_vec[tid].workvec
     @simd for i in 1:L
         @inbounds workvec[i] = DiffNumber{N,T}(x[i], seed_partials[i])
     end
@@ -189,10 +222,10 @@ const VEC_MODE_EXPR = quote
 end
 
 function calc_gradient_expr(body)
+
     return quote
         @assert L == length(x) == length(output)
         tid = Threads.threadid()
-        seed_partials::Vector{Partials{N,T}} = cachefetch!(tid, Partials{N,T})
         $(body)
         return (value(result)::S, output::Vector{S})
     end
