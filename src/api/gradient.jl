@@ -4,7 +4,7 @@
 
 # Exposed API methods #
 #---------------------#
-@generated function gradient!{T,A}(output::AbstractVector{T}, f, x::AbstractVector, ::Type{A}=Void;
+@generated function gradient!{T,A}(output::AbstractVector{T}, f, x, ::Type{A}=Void;
                                    chunk_size::Int=default_chunk_size,
                                    cache::ForwardDiffCache=dummy_cache)
     if A <: Void
@@ -21,19 +21,19 @@
     end
 end
 
-@generated function gradient{T,A}(f, x::AbstractVector{T}, ::Type{A}=Void;
+@generated function gradient{A}(f, x, ::Type{A}=Void;
                                   chunk_size::Int=default_chunk_size,
                                   cache::ForwardDiffCache=dummy_cache)
     if A <: Void
-        return_stmt = :(gradient(result)::Vector{T})
+        return_stmt = :(gradient(result))
     elseif A <: AllResults
-        return_stmt = :(gradient(result)::Vector{T}, result)
+        return_stmt = :(gradient(result), result)
     else
         error("invalid argument $A passed to FowardDiff.gradient")
     end
 
     return quote
-        result = _calc_gradient(f, x, T, chunk_size, cache)
+        result = _calc_gradient(f, x, eltype(x), chunk_size, cache)
         return $return_stmt
     end
 end
@@ -43,14 +43,14 @@ function gradient{A}(f, ::Type{A}=Void;
                      chunk_size::Int=default_chunk_size,
                      cache::ForwardDiffCache=ForwardDiffCache())
     if mutates
-        function g!(output::AbstractVector, x::AbstractVector)
+        function g!(output::AbstractVector, x)
             return ForwardDiff.gradient!(output, f, x, A;
                                          chunk_size=chunk_size,
                                          cache=cache)
         end
         return g!
     else
-        function g(x::AbstractVector)
+        function g(x)
             return ForwardDiff.gradient(f, x, A;
                                         chunk_size=chunk_size,
                                         cache=cache)
@@ -61,7 +61,7 @@ end
 
 # Calculate gradient of a given function #
 #----------------------------------------#
-function _calc_gradient{S}(f, x::AbstractVector, ::Type{S},
+function _calc_gradient{S}(f, x, ::Type{S},
                            chunk_size::Int,
                            cache::ForwardDiffCache)
     X = Val{length(x)}
@@ -69,12 +69,13 @@ function _calc_gradient{S}(f, x::AbstractVector, ::Type{S},
     return _calc_gradient(f, x, S, X, C, cache)
 end
 
-@generated function _calc_gradient{T,S,xlen,chunk_size}(f, x::AbstractVector{T}, ::Type{S},
+@generated function _calc_gradient{S,xlen,chunk_size}(f, x, ::Type{S},
                                                         X::Type{Val{xlen}},
                                                         C::Type{Val{chunk_size}},
                                                         cache::ForwardDiffCache)
+
     check_chunk_size(xlen, chunk_size)
-    G = workvec_eltype(GradientNumber, T, Val{xlen}, Val{chunk_size})
+    G = workvec_eltype(GradientNumber, eltype(x), Val{xlen}, Val{chunk_size})
     if chunk_size_matches_vec_mode(xlen, chunk_size)
         # Vector-Mode
         ResultType = switch_eltype(G, S)
@@ -122,6 +123,7 @@ end
 
     return quote
         G = $G
+        T = eltype(x)
         gradvec = get_workvec!(cache, GradientNumber, T, X, C)
         partials = get_partials!(cache, G)
 
