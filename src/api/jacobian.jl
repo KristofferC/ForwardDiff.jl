@@ -168,7 +168,6 @@ end
         partials = get_partials!(cache, G)
 
         $body
-
         return ForwardDiffResult(result)
     end
 end
