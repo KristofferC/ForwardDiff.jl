@@ -90,35 +90,37 @@ end
                                                         cache::ForwardDiffCache)
     check_chunk_size(xlen, chunk_size)
     G = workvec_eltype(GradientNumber, T, Val{xlen}, Val{chunk_size})
+    gradvec = build_workvec(G, xlen)
+    partials = build_partials(G)
+    gradzeros = build_zeros(G)
+
     if chunk_size_matches_vec_mode(xlen, chunk_size)
         # Vector-Mode
         ResultType = switch_eltype(G, S)
         body = quote
             @simd for i in 1:xlen
-                @inbounds gradvec[i] = G(x[i], partials[i])
+                @inbounds $gradvec[i] = G(x[i], $partials[i])
             end
 
-            result::Vector{$ResultType} = f(gradvec)
+            result::Vector{$ResultType} = f($gradvec)
         end
     else
         # Chunk-Mode
         ChunkType = switch_eltype(G, S)
         ResultType = GradientNumber{xlen,S,Vector{S}}
         body = quote
-            gradzeros = get_zeros!(cache, G)
-
             @simd for i in 1:xlen
-                @inbounds gradvec[i] = G(x[i], gradzeros)
+                @inbounds $gradvec[i] = G(x[i], $gradzeros)
             end
 
             # Perform the first chunk "manually" to retrieve
             # the info we need to build our output
 
             @simd for i in 1:chunk_size
-                @inbounds gradvec[i] = G(x[i], partials[i])
+                @inbounds $gradvec[i] = G(x[i], $partials[i])
             end
 
-            first_result::Vector{$ChunkType} = f(gradvec)
+            first_result::Vector{$ChunkType} = f($gradvec)
 
             nrows, ncols = length(first_result), xlen
             output = Vector{S}[Vector{S}(ncols) for i in 1:nrows]
@@ -127,7 +129,7 @@ end
                 @simd for i in 1:nrows
                     @inbounds output[i][j] = grad(first_result[i], j)
                 end
-                @inbounds gradvec[j] = G(x[j], gradzeros)
+                @inbounds $gradvec[j] = G(x[j], $gradzeros)
             end
 
             # Perform the rest of the chunks, filling in the output as we go
@@ -139,17 +141,17 @@ end
 
                 @simd for j in 1:chunk_size
                     m = j+offset
-                    @inbounds gradvec[m] = G(x[m], partials[j])
+                    @inbounds $gradvec[m] = G(x[m], $partials[j])
                 end
 
-                chunk_result = f(gradvec)
+                chunk_result = f($gradvec)
 
                 for j in 1:chunk_size
                     m = j+offset
                     @simd for n in 1:nrows
                         @inbounds output[n][m] = grad(chunk_result[n], j)
                     end
-                    @inbounds gradvec[m] = G(x[m], gradzeros)
+                    @inbounds $gradvec[m] = G(x[m], $gradzeros)
                 end
             end
 
@@ -163,9 +165,6 @@ end
 
     return quote
         G = $G
-        gradvec = get_workvec!(cache, GradientNumber, T, X, C)
-        partials = get_partials!(cache, G)
-
         $body
 
         return ForwardDiffResult(result)
