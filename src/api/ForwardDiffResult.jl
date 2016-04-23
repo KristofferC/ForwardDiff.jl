@@ -100,7 +100,7 @@ function get_jacobian!(output, arr)
 end
 
 function get_jacobian(arr)
-    output = Array(eltype(eltype(eltype(arr))), length(arr), npartials(eltype(arr)))
+    output = Array(eltype(eltype(eltype(arr))), length(arr), npartials(typeof(arr[1])))
     return _load_jacobian!(output, arr)
 end
 
