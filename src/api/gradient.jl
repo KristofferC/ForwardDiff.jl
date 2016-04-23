@@ -76,26 +76,30 @@ end
 
     check_chunk_size(xlen, chunk_size)
     G = workvec_eltype(GradientNumber, eltype(x), Val{xlen}, Val{chunk_size})
+    gradvec = build_workvec(G, xlen)
+
+    partials = build_partials(G)
+    gradzeros = build_zeros(G)
+    
     if chunk_size_matches_vec_mode(xlen, chunk_size)
         # Vector-Mode
         ResultType = switch_eltype(G, S)
         body = quote
             @simd for i in 1:xlen
-                @inbounds gradvec[i] = G(x[i], partials[i])
+                @inbounds $gradvec[i] = G(x[i], $partials[i])
             end
 
-            result::$ResultType = f(gradvec)
+            result::$ResultType = f($gradvec)
         end
     else
         # Chunk-Mode
         ChunkType = switch_eltype(G, S)
         ResultType = GradientNumber{xlen,S,Vector{S}}
         body = quote
-            gradzeros = get_zeros!(cache, G)
             output = Vector{S}(xlen)
 
             @simd for i in 1:xlen
-                @inbounds gradvec[i] = G(x[i], gradzeros)
+                @inbounds $gradvec[i] = G(x[i], $gradzeros)
             end
 
             local chunk_result::$ChunkType
@@ -105,15 +109,15 @@ end
 
                 @simd for j in 1:chunk_size
                     q = j+offset
-                    @inbounds gradvec[q] = G(x[q], partials[j])
+                    @inbounds $gradvec[q] = G(x[q], $partials[j])
                 end
 
-                chunk_result = f(gradvec)
+                chunk_result = f($gradvec)
 
                 @simd for j in 1:chunk_size
                     q = j+offset
                     @inbounds output[q] = grad(chunk_result, j)
-                    @inbounds gradvec[q] = G(x[q], gradzeros)
+                    @inbounds $gradvec[q] = G(x[q], $gradzeros)
                 end
             end
 
@@ -124,8 +128,6 @@ end
     return quote
         G = $G
         T = eltype(x)
-        gradvec = get_workvec!(cache, GradientNumber, T, X, C)
-        partials = get_partials!(cache, G)
 
         $body
 
