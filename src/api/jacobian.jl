@@ -6,6 +6,7 @@
 #---------------------#
 @generated function jacobian!{T,A}(output::Matrix{T}, f, x::Vector, ::Type{A}=Void;
                                    chunk_size::Int=default_chunk_size,
+                                   output_length::Int=0,
                                    cache::ForwardDiffCache=dummy_cache)
     if A <: Void
         return_stmt = :(jacobian!(output, result)::Matrix{T})
@@ -16,13 +17,14 @@
     end
 
     return quote
-        result = _calc_jacobian(f, x, T, chunk_size, cache)
+        result = _calc_jacobian(f, x, T, chunk_size, output_length, cache)
         return $return_stmt
     end
 end
 
 @generated function jacobian{T,A}(f, x::Vector{T}, ::Type{A}=Void;
                                   chunk_size::Int=default_chunk_size,
+                                  output_length::Int=0,
                                   cache::ForwardDiffCache=dummy_cache)
     if A <: Void
         return_stmt = :(jacobian(result)::Matrix{T})
@@ -33,7 +35,7 @@ end
     end
 
     return quote
-        result = _calc_jacobian(f, x, T, chunk_size, cache)
+        result = _calc_jacobian(f, x, T, chunk_size, output_length, cache)
         return $return_stmt
     end
 end
@@ -47,9 +49,8 @@ function jacobian{A}(f, ::Type{A}=Void;
     # the form f!(output, x), and generate the
     # appropriate closure
     if output_length > 0
-        output_cache = ForwardDiffCache()
-        newf = (x::Vector) -> begin
-            output = get_workvec!(output_cache, eltype(x), output_length)
+        #output_cache = ForwardDiffCache()
+        newf = (output::Vector, x::Vector) -> begin
             f(output, x)
             return output
         end
@@ -61,6 +62,7 @@ function jacobian{A}(f, ::Type{A}=Void;
         function j!(output::Matrix, x::Vector)
             return ForwardDiff.jacobian!(output, newf, x, A;
                                          chunk_size=chunk_size,
+                                         output_length=output_length,
                                          cache=cache)
         end
         return j!
@@ -68,6 +70,7 @@ function jacobian{A}(f, ::Type{A}=Void;
         function j(x::Vector)
             return ForwardDiff.jacobian(newf, x, A;
                                         chunk_size=chunk_size,
+                                        output_length=output_length,
                                         cache=cache)
         end
         return j
@@ -78,19 +81,23 @@ end
 #----------------------------------------#
 function _calc_jacobian{S}(f, x::Vector, ::Type{S},
                            chunk_size::Int,
+                           output_length::Int,
                            cache::ForwardDiffCache)
     X = Val{length(x)}
     C = Val{chunk_size}
-    return _calc_jacobian(f, x, S, X, C, cache)
+    output_length = Val{output_length}
+    return _calc_jacobian(f, x, S, X, C, output_length, cache)
 end
 
-@generated function _calc_jacobian{T,S,xlen,chunk_size}(f, x::Vector{T}, ::Type{S},
+@generated function _calc_jacobian{T,S,xlen,chunk_size, output_length}(f, x::Vector{T}, ::Type{S},
                                                         X::Type{Val{xlen}},
                                                         C::Type{Val{chunk_size}},
+                                                        ::Type{Val{output_length}},
                                                         cache::ForwardDiffCache)
     check_chunk_size(xlen, chunk_size)
     G = workvec_eltype(GradientNumber, T, Val{xlen}, Val{chunk_size})
     gradvec = build_workvec(G, xlen)
+    output = build_workvec(G, output_length)
     partials = build_partials(G)
     gradzeros = build_zeros(G)
 
@@ -102,7 +109,11 @@ end
                 @inbounds $gradvec[i] = G(x[i], $partials[i])
             end
 
-            result::Vector{$ResultType} = f($gradvec)
+            if $output_length == 0
+                result = f($gradvec)
+            else
+                result = f($output, $gradvec)
+            end
         end
     else
         # Chunk-Mode
@@ -144,7 +155,11 @@ end
                     @inbounds $gradvec[m] = G(x[m], $partials[j])
                 end
 
-                chunk_result = f($gradvec)
+                if $output_length == 0
+                    chunk_result = f($gradvec)
+                else
+                    chunk_result = f($output, $gradvec)
+                end
 
                 for j in 1:chunk_size
                     m = j+offset
