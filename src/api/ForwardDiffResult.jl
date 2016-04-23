@@ -4,8 +4,8 @@
 
 immutable ForwardDiffResult{T}
     data::T
-    ForwardDiffResult(data::Real) = new(data)
-    ForwardDiffResult(data::Array) = new(data)
+    #ForwardDiffResult(data::Real) = new(data)
+    #ForwardDiffResult(data::Array) = new(data)
 end
 
 ForwardDiffResult{T}(data::T) = ForwardDiffResult{T}(data)
@@ -83,7 +83,7 @@ get_gradient{N,T}(n::ForwardDiffNumber{N,T,Vector{T}}) = grad(n)
 jacobian!(output, result::ForwardDiffResult) = get_jacobian!(output, data(result))
 jacobian(result::ForwardDiffResult) = get_jacobian(data(result))
 
-function _load_jacobian!(output, arr::Array)
+function _load_jacobian!(output, arr)
     nrows, ncols = size(output)
     for j in 1:ncols
         @simd for i in 1:nrows
@@ -93,14 +93,14 @@ function _load_jacobian!(output, arr::Array)
     return output
 end
 
-function get_jacobian!{F}(output, arr::Array{F})
+function get_jacobian!(output, arr)
     @assert size(output, 1) == length(arr)
-    @assert size(output, 2) == npartials(F)
+    @assert size(output, 2) == npartials(eltype(arr))
     return _load_jacobian!(output, arr)
 end
 
-function get_jacobian{F}(arr::Array{F})
-    output = Array(eltype(F), length(arr), npartials(F))
+function get_jacobian(arr)
+    output = Array(eltype(eltype(eltype(arr))), length(arr), npartials(eltype(arr)))
     return _load_jacobian!(output, arr)
 end
 

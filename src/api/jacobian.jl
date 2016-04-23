@@ -4,38 +4,40 @@
 
 # Exposed API methods #
 #---------------------#
-@generated function jacobian!{T,A}(output::Matrix{T}, f, x::Vector, ::Type{A}=Void;
+@generated function jacobian!{A, T}(output::Matrix{T}, f, x, ::Type{A}=Void;
                                    chunk_size::Int=default_chunk_size,
                                    output_length::Int=0,
                                    cache::ForwardDiffCache=dummy_cache)
     if A <: Void
-        return_stmt = :(jacobian!(output, result)::Matrix{T})
+        return_stmt = :(jacobian!(output, result))
     elseif A <: AllResults
-        return_stmt = :(jacobian!(output, result)::Matrix{T}, result)
+        return_stmt = :(jacobian!(output, result), result)
     else
         error("invalid argument $A passed to FowardDiff.jacobian")
     end
 
     return quote
-        result = _calc_jacobian(f, x, T, chunk_size, output_length, cache)
+        result = _calc_jacobian(f, x, eltype(x), chunk_size, output_length, cache)
         return $return_stmt
     end
 end
 
-@generated function jacobian{T,A}(f, x::Vector{T}, ::Type{A}=Void;
+@generated function jacobian{A}(f, x, ::Type{A}=Void;
                                   chunk_size::Int=default_chunk_size,
                                   output_length::Int=0,
                                   cache::ForwardDiffCache=dummy_cache)
     if A <: Void
-        return_stmt = :(jacobian(result)::Matrix{T})
+        return_stmt = :(jacobian(result))
     elseif A <: AllResults
-        return_stmt = :(jacobian(result)::Matrix{T}, result)
+        return_stmt = :(jacobian(result), result)
     else
         error("invalid argument $A passed to FowardDiff.jacobian")
     end
 
     return quote
-        result = _calc_jacobian(f, x, T, chunk_size, output_length, cache)
+
+        result = _calc_jacobian(f, x, eltype(x), chunk_size, output_length, cache)
+
         return $return_stmt
     end
 end
@@ -79,7 +81,7 @@ end
 
 # Calculate Jacobian of a given function #
 #----------------------------------------#
-function _calc_jacobian{S}(f, x::Vector, ::Type{S},
+function _calc_jacobian{S}(f, x, ::Type{S},
                            chunk_size::Int,
                            output_length::Int,
                            cache::ForwardDiffCache)
@@ -89,17 +91,20 @@ function _calc_jacobian{S}(f, x::Vector, ::Type{S},
     return _calc_jacobian(f, x, S, X, C, output_length, cache)
 end
 
-@generated function _calc_jacobian{T,S,xlen,chunk_size, output_length}(f, x::Vector{T}, ::Type{S},
+
+@generated function _calc_jacobian{S,xlen,chunk_size, output_length}(f, x, ::Type{S},
                                                         X::Type{Val{xlen}},
                                                         C::Type{Val{chunk_size}},
                                                         ::Type{Val{output_length}},
                                                         cache::ForwardDiffCache)
     check_chunk_size(xlen, chunk_size)
-    G = workvec_eltype(GradientNumber, T, Val{xlen}, Val{chunk_size})
+
+    G = workvec_eltype(GradientNumber, eltype(x), Val{xlen}, Val{chunk_size})
     gradvec = build_workvec(G, xlen)
     output = build_workvec(G, output_length)
     partials = build_partials(G)
     gradzeros = build_zeros(G)
+
 
     if chunk_size_matches_vec_mode(xlen, chunk_size)
         # Vector-Mode
@@ -114,6 +119,7 @@ end
             else
                 result = f($output, $gradvec)
             end
+
         end
     else
         # Chunk-Mode
@@ -180,8 +186,11 @@ end
 
     return quote
         G = $G
-        $body
 
+        T = eltype(x)
+
+
+        $body
         return ForwardDiffResult(result)
     end
 end
